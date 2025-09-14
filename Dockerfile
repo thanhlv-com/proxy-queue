@@ -29,6 +29,9 @@ WORKDIR /root/
 # Copy the binary from builder stage
 COPY --from=builder /app/proxy-queue .
 
+# Make the binary executable
+RUN chmod +x proxy-queue
+
 # Expose ports
 EXPOSE 6789 6799 8081 9090
 
