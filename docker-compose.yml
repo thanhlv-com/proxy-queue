@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  proxy-queue:
+    build: .
+    ports:
+      - "6789:6789"   # HTTP/HTTPS proxy
+      - "6799:6799"   # Socket proxy
+      - "8081:8081"   # Health checks (when not shared)
+      - "9090:9090"   # Metrics (when not shared)
+    environment:
+      - PROXY_LISTEN_PORT=6789
+      - PROXY_TARGET_HOST=thanhlv.com
+      - PROXY_TARGET_PORT=443
+      - PROXY_DELAY_MIN=1
+      - PROXY_DELAY_MAX=5
+      - PROXY_USE_HTTPS=true
+      - PROXY_MAX_QUEUE_SIZE=1000
+      - PROXY_METRICS_PORT=9090
+      - PROXY_HEALTH_PORT=8081
+      - PROXY_LOG_LEVEL=info
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6789/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

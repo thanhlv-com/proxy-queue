@@ -1,0 +1,30 @@
+# Build artifacts
+proxy-queue
+build/
+dist/
+*.exe
+
+# Development files
+.git/
+.gitignore
+README.md
+.env
+.env.local
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
