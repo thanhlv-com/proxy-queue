@@ -113,29 +113,59 @@ func NewMetrics() *Metrics {
 	return m
 }
 
-func getIntFromEnvOrFlag(envKey string, flagValue *int) int {
+func getIntFromEnvOrFlag(envKey string, flagValue *int, flagName string, defaultValue int) int {
+	// 🚩 First check if flag was explicitly set
+	if flagPtr := flag.Lookup(flagName); flagPtr != nil {
+		if *flagValue != defaultValue {
+			return *flagValue
+		}
+	}
+
+	// 🌍 Then check environment variable
 	if envValue := os.Getenv(envKey); envValue != "" {
 		if val, err := strconv.Atoi(envValue); err == nil {
 			return val
 		}
 	}
-	return *flagValue
+
+	// 🛠️ Finally use default value
+	return defaultValue
 }
 
-func getStringFromEnvOrFlag(envKey string, flagValue *string) string {
+func getStringFromEnvOrFlag(envKey string, flagValue *string, flagName string, defaultValue string) string {
+	// 🚩 First check if flag was explicitly set
+	if flagPtr := flag.Lookup(flagName); flagPtr != nil {
+		if *flagValue != defaultValue {
+			return *flagValue
+		}
+	}
+
+	// 🌍 Then check environment variable
 	if envValue := os.Getenv(envKey); envValue != "" {
 		return envValue
 	}
-	return *flagValue
+
+	// 🛠️ Finally use default value
+	return defaultValue
 }
 
-func getBoolFromEnvOrFlag(envKey string, flagValue *bool) bool {
+func getBoolFromEnvOrFlag(envKey string, flagValue *bool, flagName string, defaultValue bool) bool {
+	// 🚩 First check if flag was explicitly set
+	if flagPtr := flag.Lookup(flagName); flagPtr != nil {
+		if *flagValue != defaultValue {
+			return *flagValue
+		}
+	}
+
+	// 🌍 Then check environment variable
 	if envValue := os.Getenv(envKey); envValue != "" {
 		if val, err := strconv.ParseBool(envValue); err == nil {
 			return val
 		}
 	}
-	return *flagValue
+
+	// 🛠️ Finally use default value
+	return defaultValue
 }
 
 func setupLogger(logLevel string) *logrus.Logger {
@@ -501,12 +531,27 @@ func (pq *ProxyQueue) processRequest(req ProxyRequest) {
 	pq.metrics.requestsTotal.Inc()
 }
 
-func getHeaderQueuesFromEnv() []string {
-	headerQueuesStr := os.Getenv("PROXY_HEADER_QUEUES")
-	if headerQueuesStr == "" {
-		return []string{}
+func getHeaderQueuesFromEnvOrFlag(flagValue *string, flagName string, defaultValue string) []string {
+	// 🚩 First check if flag was explicitly set
+	if flagPtr := flag.Lookup(flagName); flagPtr != nil {
+		if *flagValue != defaultValue {
+			if *flagValue != "" {
+				return strings.Split(*flagValue, ",")
+			}
+			return []string{}
+		}
 	}
-	return strings.Split(headerQueuesStr, ",")
+
+	// 🌍 Then check environment variable
+	if headerQueuesStr := os.Getenv("PROXY_HEADER_QUEUES"); headerQueuesStr != "" {
+		return strings.Split(headerQueuesStr, ",")
+	}
+
+	// 🛠️ Finally use default value
+	if defaultValue != "" {
+		return strings.Split(defaultValue, ",")
+	}
+	return []string{}
 }
 
 func main() {
@@ -527,27 +572,22 @@ func main() {
 	)
 	flag.Parse()
 
-	// Parse header queues from flag or environment
-	var headerQueuesList []string
-	if *headerQueues != "" {
-		headerQueuesList = strings.Split(*headerQueues, ",")
-	} else {
-		headerQueuesList = getHeaderQueuesFromEnv()
-	}
+	// Parse header queues with flag → env → default priority
+	headerQueuesList := getHeaderQueuesFromEnvOrFlag(headerQueues, "header-queues", "X-Amz-Security-Token")
 
 	config := &Config{
-		ListenPort:        getIntFromEnvOrFlag("PROXY_LISTEN_PORT", listenPort),
-		TargetHost:        getStringFromEnvOrFlag("PROXY_TARGET_HOST", targetHost),
-		TargetPort:        getIntFromEnvOrFlag("PROXY_TARGET_PORT", targetPort),
-		DelayMin:          time.Duration(getIntFromEnvOrFlag("PROXY_DELAY_MIN", delayMin)) * time.Millisecond,
-		DelayMax:          time.Duration(getIntFromEnvOrFlag("PROXY_DELAY_MAX", delayMax)) * time.Millisecond,
-		UseHTTPS:          getBoolFromEnvOrFlag("PROXY_USE_HTTPS", useHTTPS),
-		MaxQueueSize:      getIntFromEnvOrFlag("PROXY_MAX_QUEUE_SIZE", maxQueueSize),
-		MetricsPort:       getIntFromEnvOrFlag("PROXY_METRICS_PORT", metricsPort),
-		HealthPort:        getIntFromEnvOrFlag("PROXY_HEALTH_PORT", healthPort),
-		LogLevel:          getStringFromEnvOrFlag("PROXY_LOG_LEVEL", logLevel),
-		SharedHealthPort:  getBoolFromEnvOrFlag("PROXY_SHARED_HEALTH_PORT", sharedHealthPort),
-		SharedMetricsPort: getBoolFromEnvOrFlag("PROXY_SHARED_METRICS_PORT", sharedMetricsPort),
+		ListenPort:        getIntFromEnvOrFlag("PROXY_LISTEN_PORT", listenPort, "port", 6789),
+		TargetHost:        getStringFromEnvOrFlag("PROXY_TARGET_HOST", targetHost, "target-host", "localhost"),
+		TargetPort:        getIntFromEnvOrFlag("PROXY_TARGET_PORT", targetPort, "target-port", 443),
+		DelayMin:          time.Duration(getIntFromEnvOrFlag("PROXY_DELAY_MIN", delayMin, "delay-min", 1000)) * time.Millisecond,
+		DelayMax:          time.Duration(getIntFromEnvOrFlag("PROXY_DELAY_MAX", delayMax, "delay-max", 5000)) * time.Millisecond,
+		UseHTTPS:          getBoolFromEnvOrFlag("PROXY_USE_HTTPS", useHTTPS, "https", true),
+		MaxQueueSize:      getIntFromEnvOrFlag("PROXY_MAX_QUEUE_SIZE", maxQueueSize, "queue-size", 1000),
+		MetricsPort:       getIntFromEnvOrFlag("PROXY_METRICS_PORT", metricsPort, "metrics-port", 9090),
+		HealthPort:        getIntFromEnvOrFlag("PROXY_HEALTH_PORT", healthPort, "health-port", 8081),
+		LogLevel:          getStringFromEnvOrFlag("PROXY_LOG_LEVEL", logLevel, "log-level", "info"),
+		SharedHealthPort:  getBoolFromEnvOrFlag("PROXY_SHARED_HEALTH_PORT", sharedHealthPort, "shared-health-port", false),
+		SharedMetricsPort: getBoolFromEnvOrFlag("PROXY_SHARED_METRICS_PORT", sharedMetricsPort, "shared-metrics-port", false),
 		HeaderQueues:      headerQueuesList,
 	}
 
