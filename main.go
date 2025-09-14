@@ -798,12 +798,16 @@ func (pq *ProxyQueue) processHTTPRequest(req ProxyRequest) {
 	}
 
 	// Forward the request
+	requestSentTime := time.Now()
+
 	resp, err := client.Do(targetReq)
+	requestTotalTime := time.Since(requestSentTime)
 	if err != nil {
 		pq.logger.WithFields(logrus.Fields{
 			"request_id": req.ID,
 			"error":      err,
 			"target_url": targetURL,
+			"total_time": requestTotalTime,
 		}).Error("Failed to forward HTTP request")
 		pq.metrics.errorTotal.Inc()
 		atomic.AddInt64(&pq.errorCount, 1)
@@ -842,6 +846,7 @@ func (pq *ProxyQueue) processHTTPRequest(req ProxyRequest) {
 			"request_id":  req.ID,
 			"status_code": resp.StatusCode,
 			"remote_ip":   data.RemoteIP,
+			"total_time":  requestTotalTime,
 		}).Info("HTTP request processed successfully")
 	}
 
@@ -1072,13 +1077,17 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 		socketTimeout = pq.config.Timeout * time.Second
 	}
 
+	connectionStartTime := time.Now()
+
 	targetConn, err := net.DialTimeout("tcp", targetAddr, socketTimeout)
+	connectionTime := time.Since(connectionStartTime)
 	if err != nil {
 		pq.logger.WithFields(logrus.Fields{
-			"request_id":  req.ID,
-			"target_addr": targetAddr,
-			"error":       err,
-		}).Error("Failed to connect to target server")
+			"request_id":      req.ID,
+			"target_addr":     targetAddr,
+			"error":           err,
+			"connection_time": connectionTime,
+		}).Error("⏱️ Failed to connect to target server - connection attempt time")
 		pq.logSocketConnection(req.ID, data, "outgoing", fmt.Sprintf("Failed to connect to target: %v", err))
 		pq.metrics.errorTotal.Inc()
 		atomic.AddInt64(&pq.errorCount, 1)
@@ -1089,10 +1098,18 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 	}
 	defer targetConn.Close()
 
-	// Log successful target connection
-	pq.logSocketConnection(req.ID, data, "outgoing", fmt.Sprintf("Connected to target server: %s", targetAddr))
+	// Log successful target connection with timing
+	pq.logger.WithFields(logrus.Fields{
+		"request_id":      req.ID,
+		"target_addr":     targetAddr,
+		"connection_time": connectionTime,
+		"remote_ip":       data.RemoteIP,
+		"timestamp":       time.Now().UTC().Format(time.RFC3339Nano),
+	}).Info("⏱️ Socket connection established - time to connect")
+	pq.logSocketConnection(req.ID, data, "outgoing", fmt.Sprintf("Connected to target server: %s in %v", targetAddr, connectionTime))
 
 	// Start bidirectional copying with enhanced logging
+	sessionStartTime := time.Now()
 	done := make(chan error, 2)
 	var bytesClientToTarget, bytesTargetToClient int64
 
@@ -1112,6 +1129,7 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 
 	// Wait for either direction to finish
 	err = <-done
+	totalSessionTime := time.Since(sessionStartTime)
 
 	totalBytes := atomic.LoadInt64(&bytesClientToTarget) + atomic.LoadInt64(&bytesTargetToClient)
 
@@ -1121,8 +1139,10 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 			"remote_ip":         data.RemoteIP,
 			"error":             err,
 			"bytes_transferred": totalBytes,
-		}).Error("Socket connection error")
-		pq.logSocketConnection(req.ID, data, "disconnect", fmt.Sprintf("Connection terminated with error: %v, bytes transferred: %d", err, totalBytes))
+			"session_time":      totalSessionTime,
+			"connection_time":   connectionTime,
+		}).Error("⏱️ Socket connection error - total session time")
+		pq.logSocketConnection(req.ID, data, "disconnect", fmt.Sprintf("Connection terminated with error: %v, bytes transferred: %d, session time: %v", err, totalBytes, totalSessionTime))
 		pq.metrics.errorTotal.Inc()
 		atomic.AddInt64(&pq.errorCount, 1)
 	} else {
@@ -1130,8 +1150,11 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 			"request_id":        req.ID,
 			"remote_ip":         data.RemoteIP,
 			"bytes_transferred": totalBytes,
-		}).Info("Socket connection processed successfully")
-		pq.logSocketConnection(req.ID, data, "disconnect", fmt.Sprintf("Connection completed successfully, bytes transferred: %d", totalBytes))
+			"session_time":      totalSessionTime,
+			"connection_time":   connectionTime,
+			"timestamp":         time.Now().UTC().Format(time.RFC3339Nano),
+		}).Info("⏱️ Socket connection completed successfully - total session time")
+		pq.logSocketConnection(req.ID, data, "disconnect", fmt.Sprintf("Connection completed successfully, bytes transferred: %d, session time: %v", totalBytes, totalSessionTime))
 	}
 
 	req.Response <- ProxyResponse{

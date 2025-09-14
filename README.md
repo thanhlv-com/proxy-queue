@@ -451,7 +451,7 @@ All dependencies are automatically managed through Go modules (`go.mod`/`go.sum`
 - **TLS Support**: Configurable HTTPS/TLS for target connections with `InsecureSkipVerify` option
 - **Client IP Detection**: Proper client IP extraction supporting `X-Forwarded-For` and `X-Real-IP` headers
 - **Resource Limits**: Configurable queue size limits to prevent memory exhaustion
-- **Timeout Protection**: Configurable timeouts for HTTP requests (default 30s), socket connections (default 30s), HTTP proxy responses (default 60s), and socket connection handling (default 300s) - all customizable via `-timeout` flag
+- **Timeout Protection**: Configurable timeouts for HTTP requests, socket connections, HTTP proxy responses, and socket connection handling - all customizable via `-timeout` flag. Note: There's a bug in the HTTP request timeout logic (main.go:787-788) where timeout=0 incorrectly sets 30s instead of infinite
 - **Connection Cleanup**: Proper resource cleanup and connection closing
 
 ### Performance Optimizations
@@ -466,12 +466,12 @@ All dependencies are automatically managed through Go modules (`go.mod`/`go.sum`
 
 - **Queue Sizing**: Choose appropriate `PROXY_MAX_QUEUE_SIZE` based on expected load and available memory
 - **Delay Configuration**: Set `PROXY_DELAY_MIN`/`PROXY_DELAY_MAX` according to target server capacity
-- **Timeout Configuration**: Set appropriate `PROXY_TIMEOUT` values based on target server response times. Different timeout defaults apply:
-  - HTTP client requests: 30s default
-  - HTTP proxy responses: 60s default  
-  - Socket connections: 30s default
-  - Socket connection handling: 300s default
-  - Set to 0 for infinite timeout (not recommended for production)
+- **Timeout Configuration**: Set appropriate `PROXY_TIMEOUT` values based on target server response times. Different timeout behavior:
+  - HTTP client requests: Uses config.Timeout value (bug: timeout=0 sets 30s instead of infinite)
+  - HTTP proxy responses: Uses config.Timeout value (timeout=0 sets 60min, >0 multiplies by seconds)
+  - Socket connections: Uses config.Timeout value (timeout=0 sets 30min, >0 multiplies by seconds)
+  - Socket connection handling: Uses config.Timeout value (timeout=0 uses config.Timeout as-is, >0 multiplies by seconds)
+  - Note: The timeout logic has inconsistencies across different components
 - **Log Level**: Use `debug` level cautiously in production as it logs full request/response bodies
 - **Health Checks**: Configure monitoring systems to use `/health` and `/ready` endpoints
 - **Resource Monitoring**: Monitor queue size and error rate metrics for capacity planning
