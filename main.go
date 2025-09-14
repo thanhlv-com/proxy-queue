@@ -784,6 +784,8 @@ func (pq *ProxyQueue) processHTTPRequest(req ProxyRequest) {
 	timeout := 30 * time.Second // default timeout
 	if pq.config.Timeout == 0 {
 		timeout = pq.config.Timeout
+	} else if pq.config.Timeout > 0 {
+		timeout = pq.config.Timeout * time.Second
 	}
 
 	client := &http.Client{
@@ -984,6 +986,8 @@ func startHTTPProxy(queueManager *QueueManager, config *Config, ctx context.Cont
 		httpTimeout := 60 * time.Second // default timeout
 		if config.Timeout == 0 {
 			httpTimeout = 60 * time.Minute // default timeout
+		} else if config.Timeout > 0 {
+			httpTimeout = config.Timeout * time.Second
 		}
 
 		select {
@@ -1064,6 +1068,8 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 	socketTimeout := 30 * time.Second // default timeout
 	if pq.config.Timeout == 0 {
 		socketTimeout = 30 * time.Minute
+	} else if pq.config.Timeout > 0 {
+		socketTimeout = pq.config.Timeout * time.Second
 	}
 
 	targetConn, err := net.DialTimeout("tcp", targetAddr, socketTimeout)
@@ -1228,8 +1234,10 @@ func startSocketProxy(queueManager *QueueManager, config *Config, ctx context.Co
 
 			// Wait for processing with configurable timeout
 			socketConnTimeout := 300 * time.Second // default timeout
-			if config.Timeout > 0 {
+			if config.Timeout == 0 {
 				socketConnTimeout = config.Timeout
+			} else if config.Timeout > 0 {
+				socketConnTimeout = config.Timeout * time.Second
 			}
 
 			select {

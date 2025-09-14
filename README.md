@@ -92,11 +92,17 @@ make check-version         # Check Go version compatibility
 # Configure delays and queue size
 ./proxy-queue -delay-min=1000 -delay-max=3000 -queue-size=500
 
+# Configure request timeout (30 seconds for all timeout types)
+./proxy-queue -timeout=30 -target-host=api.example.com
+
+# Set longer timeout for slow APIs (120 seconds)
+./proxy-queue -timeout=120 -target-host=slow-api.example.com
+
 # Configure header-based queues for AWS requests
 ./proxy-queue -header-queues="X-Amz-Security-Token,Authorization" -target-host=api.example.com
 
-# Full configuration example
-./proxy-queue -target-host=thanhlv.com -target-port=443 -port=6789 -delay-min=1 -delay-max=5
+# Full configuration example with timeout
+./proxy-queue -target-host=thanhlv.com -target-port=443 -port=6789 -delay-min=1 -delay-max=5 -timeout=60
 
 # Quick run with Makefile
 make run                   # Build and run with defaults
@@ -123,6 +129,7 @@ variables take precedence when both are provided.
 | `PROXY_SHARED_HEALTH_PORT`  | `-shared-health-port`  | false                | Serve health checks on HTTP proxy port 🚩    |
 | `PROXY_SHARED_METRICS_PORT` | `-shared-metrics-port` | false                | Serve metrics on HTTP proxy port 📊          |
 | `PROXY_HEADER_QUEUES`       | `-header-queues`       | X-Amz-Security-Token | Comma-separated headers for dedicated queues |
+| `PROXY_TIMEOUT`             | `-timeout`             | 0                    | Request timeout in seconds (0 = infinite ⏳)  |
 
 ### Header-Based Queue Routing 📤
 
@@ -170,6 +177,7 @@ export PROXY_TARGET_HOST=api.example.com
 export PROXY_TARGET_PORT=443
 export PROXY_LOG_LEVEL=debug
 export PROXY_HEADER_QUEUES=X-Amz-Security-Token
+export PROXY_TIMEOUT=45  # 45 seconds timeout for all operations
 ./proxy-queue
 ```
 
@@ -443,7 +451,7 @@ All dependencies are automatically managed through Go modules (`go.mod`/`go.sum`
 - **TLS Support**: Configurable HTTPS/TLS for target connections with `InsecureSkipVerify` option
 - **Client IP Detection**: Proper client IP extraction supporting `X-Forwarded-For` and `X-Real-IP` headers
 - **Resource Limits**: Configurable queue size limits to prevent memory exhaustion
-- **Timeout Protection**: Built-in timeouts for HTTP requests (30s) and socket connections
+- **Timeout Protection**: Configurable timeouts for HTTP requests (default 30s), socket connections (default 30s), HTTP proxy responses (default 60s), and socket connection handling (default 300s) - all customizable via `-timeout` flag
 - **Connection Cleanup**: Proper resource cleanup and connection closing
 
 ### Performance Optimizations
@@ -458,6 +466,12 @@ All dependencies are automatically managed through Go modules (`go.mod`/`go.sum`
 
 - **Queue Sizing**: Choose appropriate `PROXY_MAX_QUEUE_SIZE` based on expected load and available memory
 - **Delay Configuration**: Set `PROXY_DELAY_MIN`/`PROXY_DELAY_MAX` according to target server capacity
+- **Timeout Configuration**: Set appropriate `PROXY_TIMEOUT` values based on target server response times. Different timeout defaults apply:
+  - HTTP client requests: 30s default
+  - HTTP proxy responses: 60s default  
+  - Socket connections: 30s default
+  - Socket connection handling: 300s default
+  - Set to 0 for infinite timeout (not recommended for production)
 - **Log Level**: Use `debug` level cautiously in production as it logs full request/response bodies
 - **Health Checks**: Configure monitoring systems to use `/health` and `/ready` endpoints
 - **Resource Monitoring**: Monitor queue size and error rate metrics for capacity planning
