@@ -523,7 +523,7 @@ func main() {
 		logLevel          = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 		sharedHealthPort  = flag.Bool("shared-health-port", false, "Serve health checks on the same port as HTTP proxy")
 		sharedMetricsPort = flag.Bool("shared-metrics-port", false, "Serve metrics on the same port as HTTP proxy")
-		headerQueues      = flag.String("header-queues", "X-Amz-Security-Token,Authorization", "Comma-separated list of headers to create separate queues for (e.g., 'X-Amz-Security-Token,X-Amz-Content-Sha256')")
+		headerQueues      = flag.String("header-queues", "X-Amz-Security-Token", "Comma-separated list of headers to create separate queues for (e.g., 'X-Amz-Security-Token,Authorization')")
 	)
 	flag.Parse()
 

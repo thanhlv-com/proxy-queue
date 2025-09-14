@@ -108,21 +108,56 @@ make run-example           # Run with example configuration
 The application supports both **environment variables** (prioritized) and **command line flags**. Environment
 variables take precedence when both are provided.
 
-| Environment Variable        | Command Line Flag      | Default                              | Description                                  |
-|-----------------------------|------------------------|--------------------------------------|----------------------------------------------|
-| `PROXY_LISTEN_PORT`         | `-port`                | 6789                                 | Port to listen on                            |
-| `PROXY_TARGET_HOST`         | `-target-host`         | localhost                            | Target host to proxy to                      |
-| `PROXY_TARGET_PORT`         | `-target-port`         | 443                                  | Target port to proxy to                      |
-| `PROXY_DELAY_MIN`           | `-delay-min`           | 1000                                 | Minimum delay between requests (ms)          |
-| `PROXY_DELAY_MAX`           | `-delay-max`           | 5000                                 | Maximum delay between requests (ms)          |
-| `PROXY_USE_HTTPS`           | `-https`               | true                                 | Use HTTPS for target connections             |
-| `PROXY_MAX_QUEUE_SIZE`      | `-queue-size`          | 1000                                 | Maximum queue size                           |
-| `PROXY_METRICS_PORT`        | `-metrics-port`        | 9090                                 | Port for Prometheus metrics                  |
-| `PROXY_HEALTH_PORT`         | `-health-port`         | 8081                                 | Port for health checks                       |
-| `PROXY_LOG_LEVEL`           | `-log-level`           | info                                 | Log level (debug, info, warn, error)         |
-| `PROXY_SHARED_HEALTH_PORT`  | `-shared-health-port`  | false                                | Serve health checks on HTTP proxy port 🚩    |
-| `PROXY_SHARED_METRICS_PORT` | `-shared-metrics-port` | false                                | Serve metrics on HTTP proxy port 📊          |
-| `PROXY_HEADER_QUEUES`       | `-header-queues`       | X-Amz-Security-Token,Authorization | Comma-separated headers for dedicated queues |
+| Environment Variable        | Command Line Flag      | Default              | Description                                  |
+|-----------------------------|------------------------|----------------------|----------------------------------------------|
+| `PROXY_LISTEN_PORT`         | `-port`                | 6789                 | Port to listen on                            |
+| `PROXY_TARGET_HOST`         | `-target-host`         | localhost            | Target host to proxy to                      |
+| `PROXY_TARGET_PORT`         | `-target-port`         | 443                  | Target port to proxy to                      |
+| `PROXY_DELAY_MIN`           | `-delay-min`           | 1000                 | Minimum delay between requests (ms)          |
+| `PROXY_DELAY_MAX`           | `-delay-max`           | 5000                 | Maximum delay between requests (ms)          |
+| `PROXY_USE_HTTPS`           | `-https`               | true                 | Use HTTPS for target connections             |
+| `PROXY_MAX_QUEUE_SIZE`      | `-queue-size`          | 1000                 | Maximum queue size                           |
+| `PROXY_METRICS_PORT`        | `-metrics-port`        | 9090                 | Port for Prometheus metrics                  |
+| `PROXY_HEALTH_PORT`         | `-health-port`         | 8081                 | Port for health checks                       |
+| `PROXY_LOG_LEVEL`           | `-log-level`           | info                 | Log level (debug, info, warn, error)         |
+| `PROXY_SHARED_HEALTH_PORT`  | `-shared-health-port`  | false                | Serve health checks on HTTP proxy port 🚩    |
+| `PROXY_SHARED_METRICS_PORT` | `-shared-metrics-port` | false                | Serve metrics on HTTP proxy port 📊          |
+| `PROXY_HEADER_QUEUES`       | `-header-queues`       | X-Amz-Security-Token | Comma-separated headers for dedicated queues |
+
+### Header-Based Queue Routing 📤
+
+The proxy supports routing requests to dedicated queues based on specific HTTP headers. This is particularly
+useful for managing different authentication systems or API providers that require rate limiting.
+
+#### Supported Headers by System
+
+| System                          | Headers                                        | Description                                                              |
+|---------------------------------|------------------------------------------------|--------------------------------------------------------------------------|
+| **AWS Services, claude cli** 🔑 | `X-Amz-Security-Token`                         | Routes AWS API requests with temporary credentials or IAM authentication |
+| **ChatGPT/OpenAI** 🤖           | `Authorization`, `OpenAI-Organization`         | Handles OpenAI API requests with API keys and organization routing       |
+| **Claude/Anthropic** 🌐         | `Authorization`, `anthropic-version`           | Manages Anthropic API requests with proper versioning                    |
+| **Google Cloud** ☁️             | `Authorization`, `X-Goog-User-Project`         | Routes Google Cloud API requests with project-specific billing           |
+| **Azure** 🟦                    | `Authorization`, `Ocp-Apim-Subscription-Key`   | Handles Azure API Management requests                                    |
+| **Custom APIs** 🔧              | `X-API-Key`, `Authorization`, `X-Custom-Token` | Generic headers for custom authentication systems                        |
+
+#### Configuration Examples
+
+```bash
+# AWS-specific configuration
+./proxy-queue -header-queues="X-Amz-Security-Token,Authorization" -target-host=xxx
+
+# Environment variable approach 
+export PROXY_HEADER_QUEUES="Authorization,X-Amz-Security-Token,OpenAI-Organization"
+./proxy-queue
+```
+
+#### How Header Routing Works
+
+1. **Request Analysis**: Incoming requests are inspected for configured headers
+2. **Queue Selection**: Requests with matching headers are routed to dedicated queues
+3. **Isolated Processing**: Each header-based queue processes requests independently
+4. **Rate Limiting**: Different queues can have different processing rates and delays
+5. **Fallback**: Requests without matching headers go to the main queue
 
 #### Environment Configuration Example
 
@@ -134,7 +169,7 @@ cp .env.example .env
 export PROXY_TARGET_HOST=api.example.com
 export PROXY_TARGET_PORT=443
 export PROXY_LOG_LEVEL=debug
-export PROXY_HEADER_QUEUES=X-Amz-Security-Token,Authorization
+export PROXY_HEADER_QUEUES=X-Amz-Security-Token
 ./proxy-queue
 ```
 
