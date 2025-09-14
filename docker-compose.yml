@@ -18,6 +18,8 @@ services:
       - PROXY_MAX_QUEUE_SIZE=1000
       - PROXY_METRICS_PORT=9090
       - PROXY_HEALTH_PORT=8081
+      - PROXY_SHARED_HEALTH_PORT=false
+      - PROXY_SHARED_METRICS_PORT=false
       - PROXY_LOG_LEVEL=info
     restart: always
     healthcheck:
