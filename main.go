@@ -591,7 +591,7 @@ func main() {
 		SharedHealthPort:  getBoolFromEnvOrFlag("PROXY_SHARED_HEALTH_PORT", sharedHealthPort, "shared-health-port", false),
 		SharedMetricsPort: getBoolFromEnvOrFlag("PROXY_SHARED_METRICS_PORT", sharedMetricsPort, "shared-metrics-port", false),
 		HeaderQueues:      headerQueuesList,
-		Timeout:           time.Duration(getIntFromEnvOrFlag("PROXY_TIMEOUT", timeout)) * time.Second,
+		Timeout:           time.Duration(getIntFromEnvOrFlag("PROXY_TIMEOUT", timeout, "timeout", 0)) * time.Second,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
