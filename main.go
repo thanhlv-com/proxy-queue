@@ -36,7 +36,8 @@ type Config struct {
 	LogLevel          string
 	SharedHealthPort  bool
 	SharedMetricsPort bool
-	HeaderQueues      []string // Headers to create separate queues for (e.g., ["X-Amz-Security-Token", "X-Amz-Content-Sha256"])
+	HeaderQueues      []string      // Headers to create separate queues for (e.g., ["X-Amz-Security-Token", "X-Amz-Content-Sha256"])
+	Timeout           time.Duration // Request timeout (0 = infinite)
 }
 
 type ProxyRequest struct {
@@ -324,7 +325,7 @@ func (qm *QueueManager) getOrCreateHeaderQueue(ctx context.Context, headerName, 
 		"header_name":  headerName,
 		"header_value": headerValue,
 		"queue_key":    queueKey,
-	}).Info("🎟️ Created new header-based queue")
+	}).Debug("🎟️ Created new header-based queue")
 
 	return queue
 }
@@ -524,6 +525,7 @@ func main() {
 		sharedHealthPort  = flag.Bool("shared-health-port", false, "Serve health checks on the same port as HTTP proxy")
 		sharedMetricsPort = flag.Bool("shared-metrics-port", false, "Serve metrics on the same port as HTTP proxy")
 		headerQueues      = flag.String("header-queues", "X-Amz-Security-Token", "Comma-separated list of headers to create separate queues for (e.g., 'X-Amz-Security-Token,Authorization')")
+		timeout           = flag.Int("timeout", 0, "Request timeout in seconds (0 = infinite ⏳)")
 	)
 	flag.Parse()
 
@@ -549,6 +551,7 @@ func main() {
 		SharedHealthPort:  getBoolFromEnvOrFlag("PROXY_SHARED_HEALTH_PORT", sharedHealthPort),
 		SharedMetricsPort: getBoolFromEnvOrFlag("PROXY_SHARED_METRICS_PORT", sharedMetricsPort),
 		HeaderQueues:      headerQueuesList,
+		Timeout:           time.Duration(getIntFromEnvOrFlag("PROXY_TIMEOUT", timeout)) * time.Second,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -572,6 +575,7 @@ func main() {
 			"shared_health_port":  config.SharedHealthPort,
 			"shared_metrics_port": config.SharedMetricsPort,
 			"header_queues":       config.HeaderQueues,
+			"timeout":             config.Timeout,
 		},
 		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
 	}).Debug("🚀 Proxy Queue Manager Configuration Loaded")
@@ -621,6 +625,7 @@ func main() {
 		"delay_max":     config.DelayMax,
 		"log_level":     config.LogLevel,
 		"header_queues": config.HeaderQueues,
+		"timeout":       config.Timeout,
 		"timestamp":     time.Now().UTC().Format(time.RFC3339Nano),
 	}).Info("🎯 Proxy server started and ready to accept connections")
 
@@ -775,9 +780,14 @@ func (pq *ProxyQueue) processHTTPRequest(req ProxyRequest) {
 	targetReq.Host = target.Host
 	targetReq.RequestURI = ""
 
-	// Create HTTP client with timeout
+	// Create HTTP client with configurable timeout
+	timeout := 30 * time.Second // default timeout
+	if pq.config.Timeout == 0 {
+		timeout = pq.config.Timeout
+	}
+
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: timeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -970,7 +980,12 @@ func startHTTPProxy(queueManager *QueueManager, config *Config, ctx context.Cont
 			return
 		}
 
-		// Wait for response
+		// Wait for response with configurable timeout
+		httpTimeout := 60 * time.Second // default timeout
+		if config.Timeout == 0 {
+			httpTimeout = 60 * time.Minute // default timeout
+		}
+
 		select {
 		case response := <-responseChan:
 			if response.Error != nil {
@@ -986,10 +1001,11 @@ func startHTTPProxy(queueManager *QueueManager, config *Config, ctx context.Cont
 					"duration":   time.Since(startTime),
 				}).Debug("✅ HTTP Request Completed Successfully")
 			}
-		case <-time.After(60 * time.Second):
+		case <-time.After(httpTimeout):
 			queueManager.logger.WithFields(logrus.Fields{
 				"request_id": requestID,
 				"duration":   time.Since(startTime),
+				"timeout":    httpTimeout,
 			}).Warn("HTTP request timeout")
 			http.Error(w, "Request timeout", http.StatusGatewayTimeout)
 		}
@@ -1044,8 +1060,13 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 
 	targetAddr := fmt.Sprintf("%s:%d", pq.config.TargetHost, pq.config.TargetPort)
 
-	// Connect to target server
-	targetConn, err := net.DialTimeout("tcp", targetAddr, 30*time.Second)
+	// Connect to target server with configurable timeout
+	socketTimeout := 30 * time.Second // default timeout
+	if pq.config.Timeout == 0 {
+		socketTimeout = 30 * time.Minute
+	}
+
+	targetConn, err := net.DialTimeout("tcp", targetAddr, socketTimeout)
 	if err != nil {
 		pq.logger.WithFields(logrus.Fields{
 			"request_id":  req.ID,
@@ -1205,7 +1226,12 @@ func startSocketProxy(queueManager *QueueManager, config *Config, ctx context.Co
 				return
 			}
 
-			// Wait for processing
+			// Wait for processing with configurable timeout
+			socketConnTimeout := 300 * time.Second // default timeout
+			if config.Timeout > 0 {
+				socketConnTimeout = config.Timeout
+			}
+
 			select {
 			case response := <-responseChan:
 				if response.Error != nil {
@@ -1214,8 +1240,11 @@ func startSocketProxy(queueManager *QueueManager, config *Config, ctx context.Co
 						"error":      response.Error,
 					}).Error("Socket proxy error")
 				}
-			case <-time.After(300 * time.Second):
-				queueManager.logger.WithField("request_id", requestID).Warn("Socket connection timeout")
+			case <-time.After(socketConnTimeout):
+				queueManager.logger.WithFields(logrus.Fields{
+					"request_id": requestID,
+					"timeout":    socketConnTimeout,
+				}).Warn("Socket connection timeout")
 			}
 		}(clientConn)
 	}
