@@ -36,7 +36,8 @@ type Config struct {
 	LogLevel          string
 	SharedHealthPort  bool
 	SharedMetricsPort bool
-	HeaderQueues      []string // Headers to create separate queues for (e.g., ["X-Amz-Security-Token", "X-Amz-Content-Sha256"])
+	HeaderQueues      []string      // Headers to create separate queues for (e.g., ["X-Amz-Security-Token", "X-Amz-Content-Sha256"])
+	Timeout           time.Duration // Request timeout (0 = infinite)
 }
 
 type ProxyRequest struct {
@@ -354,7 +355,7 @@ func (qm *QueueManager) getOrCreateHeaderQueue(ctx context.Context, headerName, 
 		"header_name":  headerName,
 		"header_value": headerValue,
 		"queue_key":    queueKey,
-	}).Info("🎟️ Created new header-based queue")
+	}).Debug("🎟️ Created new header-based queue")
 
 	return queue
 }
@@ -569,6 +570,7 @@ func main() {
 		sharedHealthPort  = flag.Bool("shared-health-port", false, "Serve health checks on the same port as HTTP proxy")
 		sharedMetricsPort = flag.Bool("shared-metrics-port", false, "Serve metrics on the same port as HTTP proxy")
 		headerQueues      = flag.String("header-queues", "X-Amz-Security-Token", "Comma-separated list of headers to create separate queues for (e.g., 'X-Amz-Security-Token,Authorization')")
+		timeout           = flag.Int("timeout", 0, "Request timeout in seconds (0 = infinite ⏳)")
 	)
 	flag.Parse()
 
@@ -589,6 +591,7 @@ func main() {
 		SharedHealthPort:  getBoolFromEnvOrFlag("PROXY_SHARED_HEALTH_PORT", sharedHealthPort, "shared-health-port", false),
 		SharedMetricsPort: getBoolFromEnvOrFlag("PROXY_SHARED_METRICS_PORT", sharedMetricsPort, "shared-metrics-port", false),
 		HeaderQueues:      headerQueuesList,
+		Timeout:           time.Duration(getIntFromEnvOrFlag("PROXY_TIMEOUT", timeout)) * time.Second,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -612,6 +615,7 @@ func main() {
 			"shared_health_port":  config.SharedHealthPort,
 			"shared_metrics_port": config.SharedMetricsPort,
 			"header_queues":       config.HeaderQueues,
+			"timeout":             config.Timeout,
 		},
 		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
 	}).Debug("🚀 Proxy Queue Manager Configuration Loaded")
@@ -661,6 +665,7 @@ func main() {
 		"delay_max":     config.DelayMax,
 		"log_level":     config.LogLevel,
 		"header_queues": config.HeaderQueues,
+		"timeout":       config.Timeout,
 		"timestamp":     time.Now().UTC().Format(time.RFC3339Nano),
 	}).Info("🎯 Proxy server started and ready to accept connections")
 
@@ -815,9 +820,16 @@ func (pq *ProxyQueue) processHTTPRequest(req ProxyRequest) {
 	targetReq.Host = target.Host
 	targetReq.RequestURI = ""
 
-	// Create HTTP client with timeout
+	// Create HTTP client with configurable timeout
+	timeout := 30 * time.Second // default timeout
+	if pq.config.Timeout == 0 {
+		timeout = pq.config.Timeout
+	} else if pq.config.Timeout > 0 {
+		timeout = pq.config.Timeout * time.Second
+	}
+
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: timeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
@@ -826,12 +838,16 @@ func (pq *ProxyQueue) processHTTPRequest(req ProxyRequest) {
 	}
 
 	// Forward the request
+	requestSentTime := time.Now()
+
 	resp, err := client.Do(targetReq)
+	requestTotalTime := time.Since(requestSentTime)
 	if err != nil {
 		pq.logger.WithFields(logrus.Fields{
 			"request_id": req.ID,
 			"error":      err,
 			"target_url": targetURL,
+			"total_time": requestTotalTime,
 		}).Error("Failed to forward HTTP request")
 		pq.metrics.errorTotal.Inc()
 		atomic.AddInt64(&pq.errorCount, 1)
@@ -870,6 +886,7 @@ func (pq *ProxyQueue) processHTTPRequest(req ProxyRequest) {
 			"request_id":  req.ID,
 			"status_code": resp.StatusCode,
 			"remote_ip":   data.RemoteIP,
+			"total_time":  requestTotalTime,
 		}).Info("HTTP request processed successfully")
 	}
 
@@ -1010,7 +1027,14 @@ func startHTTPProxy(queueManager *QueueManager, config *Config, ctx context.Cont
 			return
 		}
 
-		// Wait for response
+		// Wait for response with configurable timeout
+		httpTimeout := 60 * time.Second // default timeout
+		if config.Timeout == 0 {
+			httpTimeout = 60 * time.Minute // default timeout
+		} else if config.Timeout > 0 {
+			httpTimeout = config.Timeout * time.Second
+		}
+
 		select {
 		case response := <-responseChan:
 			if response.Error != nil {
@@ -1026,10 +1050,11 @@ func startHTTPProxy(queueManager *QueueManager, config *Config, ctx context.Cont
 					"duration":   time.Since(startTime),
 				}).Debug("✅ HTTP Request Completed Successfully")
 			}
-		case <-time.After(60 * time.Second):
+		case <-time.After(httpTimeout):
 			queueManager.logger.WithFields(logrus.Fields{
 				"request_id": requestID,
 				"duration":   time.Since(startTime),
+				"timeout":    httpTimeout,
 			}).Warn("HTTP request timeout")
 			http.Error(w, "Request timeout", http.StatusGatewayTimeout)
 		}
@@ -1084,14 +1109,25 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 
 	targetAddr := fmt.Sprintf("%s:%d", pq.config.TargetHost, pq.config.TargetPort)
 
-	// Connect to target server
-	targetConn, err := net.DialTimeout("tcp", targetAddr, 30*time.Second)
+	// Connect to target server with configurable timeout
+	socketTimeout := 30 * time.Second // default timeout
+	if pq.config.Timeout == 0 {
+		socketTimeout = 30 * time.Minute
+	} else if pq.config.Timeout > 0 {
+		socketTimeout = pq.config.Timeout * time.Second
+	}
+
+	connectionStartTime := time.Now()
+
+	targetConn, err := net.DialTimeout("tcp", targetAddr, socketTimeout)
+	connectionTime := time.Since(connectionStartTime)
 	if err != nil {
 		pq.logger.WithFields(logrus.Fields{
-			"request_id":  req.ID,
-			"target_addr": targetAddr,
-			"error":       err,
-		}).Error("Failed to connect to target server")
+			"request_id":      req.ID,
+			"target_addr":     targetAddr,
+			"error":           err,
+			"connection_time": connectionTime,
+		}).Error("⏱️ Failed to connect to target server - connection attempt time")
 		pq.logSocketConnection(req.ID, data, "outgoing", fmt.Sprintf("Failed to connect to target: %v", err))
 		pq.metrics.errorTotal.Inc()
 		atomic.AddInt64(&pq.errorCount, 1)
@@ -1102,10 +1138,18 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 	}
 	defer targetConn.Close()
 
-	// Log successful target connection
-	pq.logSocketConnection(req.ID, data, "outgoing", fmt.Sprintf("Connected to target server: %s", targetAddr))
+	// Log successful target connection with timing
+	pq.logger.WithFields(logrus.Fields{
+		"request_id":      req.ID,
+		"target_addr":     targetAddr,
+		"connection_time": connectionTime,
+		"remote_ip":       data.RemoteIP,
+		"timestamp":       time.Now().UTC().Format(time.RFC3339Nano),
+	}).Info("⏱️ Socket connection established - time to connect")
+	pq.logSocketConnection(req.ID, data, "outgoing", fmt.Sprintf("Connected to target server: %s in %v", targetAddr, connectionTime))
 
 	// Start bidirectional copying with enhanced logging
+	sessionStartTime := time.Now()
 	done := make(chan error, 2)
 	var bytesClientToTarget, bytesTargetToClient int64
 
@@ -1125,6 +1169,7 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 
 	// Wait for either direction to finish
 	err = <-done
+	totalSessionTime := time.Since(sessionStartTime)
 
 	totalBytes := atomic.LoadInt64(&bytesClientToTarget) + atomic.LoadInt64(&bytesTargetToClient)
 
@@ -1134,8 +1179,10 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 			"remote_ip":         data.RemoteIP,
 			"error":             err,
 			"bytes_transferred": totalBytes,
-		}).Error("Socket connection error")
-		pq.logSocketConnection(req.ID, data, "disconnect", fmt.Sprintf("Connection terminated with error: %v, bytes transferred: %d", err, totalBytes))
+			"session_time":      totalSessionTime,
+			"connection_time":   connectionTime,
+		}).Error("⏱️ Socket connection error - total session time")
+		pq.logSocketConnection(req.ID, data, "disconnect", fmt.Sprintf("Connection terminated with error: %v, bytes transferred: %d, session time: %v", err, totalBytes, totalSessionTime))
 		pq.metrics.errorTotal.Inc()
 		atomic.AddInt64(&pq.errorCount, 1)
 	} else {
@@ -1143,8 +1190,11 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 			"request_id":        req.ID,
 			"remote_ip":         data.RemoteIP,
 			"bytes_transferred": totalBytes,
-		}).Info("Socket connection processed successfully")
-		pq.logSocketConnection(req.ID, data, "disconnect", fmt.Sprintf("Connection completed successfully, bytes transferred: %d", totalBytes))
+			"session_time":      totalSessionTime,
+			"connection_time":   connectionTime,
+			"timestamp":         time.Now().UTC().Format(time.RFC3339Nano),
+		}).Info("⏱️ Socket connection completed successfully - total session time")
+		pq.logSocketConnection(req.ID, data, "disconnect", fmt.Sprintf("Connection completed successfully, bytes transferred: %d, session time: %v", totalBytes, totalSessionTime))
 	}
 
 	req.Response <- ProxyResponse{
@@ -1245,7 +1295,14 @@ func startSocketProxy(queueManager *QueueManager, config *Config, ctx context.Co
 				return
 			}
 
-			// Wait for processing
+			// Wait for processing with configurable timeout
+			socketConnTimeout := 300 * time.Second // default timeout
+			if config.Timeout == 0 {
+				socketConnTimeout = config.Timeout
+			} else if config.Timeout > 0 {
+				socketConnTimeout = config.Timeout * time.Second
+			}
+
 			select {
 			case response := <-responseChan:
 				if response.Error != nil {
@@ -1254,8 +1311,11 @@ func startSocketProxy(queueManager *QueueManager, config *Config, ctx context.Co
 						"error":      response.Error,
 					}).Error("Socket proxy error")
 				}
-			case <-time.After(300 * time.Second):
-				queueManager.logger.WithField("request_id", requestID).Warn("Socket connection timeout")
+			case <-time.After(socketConnTimeout):
+				queueManager.logger.WithFields(logrus.Fields{
+					"request_id": requestID,
+					"timeout":    socketConnTimeout,
+				}).Warn("Socket connection timeout")
 			}
 		}(clientConn)
 	}
