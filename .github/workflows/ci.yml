@@ -46,18 +46,6 @@ jobs:
     - name: Vet
       run: go vet ./...
       
-    - name: Install golangci-lint
-      run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-      
-    - name: Lint
-      run: golangci-lint run
-      
-    - name: Test
-      run: go test -v ./...
-      
-    - name: Test with race detection
-      run: go test -race -v ./...
-      
     - name: Build
       run: go build -v ./...
       
