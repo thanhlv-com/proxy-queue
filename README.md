@@ -8,6 +8,7 @@ advanced queue-based request processing, comprehensive monitoring, and flexible 
 - 🔗 **Multi-protocol support**: HTTP, HTTPS, and raw socket connections
 - 📥 **Queue-based processing**: All requests are queued and processed sequentially with configurable queue size
   and header-based routing
+- 🔒 **Persistent headers**: Force specific headers that cannot be overwritten by clients (e.g., User-Agent: mobile)
 - ⏱ **Configurable delays**: Set random delays between requests (min/max range in milliseconds)
 - ⚙️ **Flexible configuration**: Environment variables and command-line flags with precedence handling
 - 🛡️ **Connection management**: Proper timeout handling, resource cleanup, and context-based cancellation
@@ -101,8 +102,11 @@ make check-version         # Check Go version compatibility
 # Configure header-based queues for AWS requests
 ./proxy-queue -header-queues="X-Amz-Security-Token,Authorization" -target-host=api.example.com
 
-# Full configuration example with timeout
-./proxy-queue -target-host=thanhlv.com -target-port=443 -port=6789 -delay-min=1 -delay-max=5 -timeout=60
+# Configure persistent headers that cannot be overwritten
+./proxy-queue -persistent-headers="User-Agent:mobile,X-Source:proxy" -target-host=api.example.com
+
+# Full configuration example with timeout and persistent headers
+./proxy-queue -target-host=thanhlv.com -target-port=443 -port=6789 -delay-min=1 -delay-max=5 -timeout=60 -persistent-headers="User-Agent:mobile"
 
 # Quick run with Makefile
 make run                   # Build and run with defaults
@@ -129,7 +133,55 @@ variables take precedence when both are provided.
 | `PROXY_SHARED_HEALTH_PORT`  | `-shared-health-port`  | false                | Serve health checks on HTTP proxy port 🚩    |
 | `PROXY_SHARED_METRICS_PORT` | `-shared-metrics-port` | false                | Serve metrics on HTTP proxy port 📊          |
 | `PROXY_HEADER_QUEUES`       | `-header-queues`       | X-Amz-Security-Token | Comma-separated headers for dedicated queues |
+| `PROXY_PERSISTENT_HEADERS`  | `-persistent-headers`  | (empty)              | Persistent headers that cannot be overwritten 🔒 |
 | `PROXY_TIMEOUT`             | `-timeout`             | 0                    | Request timeout in seconds (0 = infinite ⏳)  |
+
+### Persistent Headers 🔒
+
+The proxy supports adding persistent headers that are always included in outgoing requests and cannot be overwritten by clients. This is useful for enforcing specific headers like `User-Agent`, API keys, or authentication tokens that must remain constant.
+
+#### Configuration Format
+
+Persistent headers are configured using a comma-separated list of `key:value` pairs:
+
+```bash
+# Command line flag
+./proxy-queue -persistent-headers "User-Agent:mobile,X-API-Version:v2.1,Authorization:Bearer fixed-token"
+
+# Environment variable
+export PROXY_PERSISTENT_HEADERS="User-Agent:mobile,X-API-Version:v2.1,Authorization:Bearer fixed-token"
+./proxy-queue
+```
+
+#### Common Use Cases
+
+| Use Case | Example Configuration | Description |
+|----------|----------------------|-------------|
+| **Mobile User Agent** | `User-Agent:mobile` | Force all requests to appear as mobile |
+| **API Versioning** | `X-API-Version:v2.1,Accept:application/json` | Enforce specific API version and content type |
+| **Fixed Authentication** | `Authorization:Bearer token123` | Use a fixed auth token that clients cannot override |
+| **Custom Headers** | `X-Source:proxy-queue,X-Environment:production` | Add metadata headers for tracking |
+
+#### Security Features
+
+- **Non-overwriteable**: Client headers with the same name are ignored
+- **Always applied**: Persistent headers are added to every HTTP/HTTPS request
+- **Debug logging**: Header application is logged at debug level for troubleshooting
+- **Flexible format**: Supports any valid HTTP header name and value
+
+#### Example Usage
+
+```bash
+# Ensure all requests use mobile user agent
+./proxy-queue -persistent-headers "User-Agent:mobile" -target-host=api.example.com
+
+# Multiple persistent headers
+./proxy-queue -persistent-headers "User-Agent:mobile,X-Source:proxy,Accept:application/json"
+
+# Environment variable approach
+export PROXY_PERSISTENT_HEADERS="User-Agent:mobile,X-Custom:always-present"
+./proxy-queue -target-host=api.example.com
+```
 
 ### Header-Based Queue Routing 📤
 
@@ -177,6 +229,7 @@ export PROXY_TARGET_HOST=api.example.com
 export PROXY_TARGET_PORT=443
 export PROXY_LOG_LEVEL=debug
 export PROXY_HEADER_QUEUES=X-Amz-Security-Token
+export PROXY_PERSISTENT_HEADERS="User-Agent:mobile,X-Source:proxy-queue"
 export PROXY_TIMEOUT=45  # 45 seconds timeout for all operations
 ./proxy-queue
 ```
