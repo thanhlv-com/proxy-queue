@@ -20,6 +20,8 @@ services:
       - PROXY_HEALTH_PORT=8081
       - PROXY_SHARED_HEALTH_PORT=false
       - PROXY_SHARED_METRICS_PORT=false
+      - PROXY_HEADER_QUEUES=X-Amz-Security-Token,Authorization
+      - PROXY_PERSISTENT_HEADERS=x-token-test:token-1234
       - PROXY_LOG_LEVEL=info
     restart: always
     healthcheck:
