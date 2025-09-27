@@ -37,6 +37,7 @@ type Config struct {
 	SharedHealthPort  bool
 	SharedMetricsPort bool
 	HeaderQueues      []string      // Headers to create separate queues for (e.g., ["X-Amz-Security-Token", "X-Amz-Content-Sha256"])
+	PersistentHeaders map[string]string // Headers that are always added and cannot be overwritten by clients (e.g., {"User-Agent": "mobile"})
 	Timeout           time.Duration // Request timeout (0 = infinite)
 }
 
@@ -555,6 +556,45 @@ func getHeaderQueuesFromEnvOrFlag(flagValue *string, flagName string, defaultVal
 	return []string{}
 }
 
+func getPersistentHeadersFromEnvOrFlag(flagValue *string, flagName string, defaultValue string) map[string]string {
+	persistentHeaders := make(map[string]string)
+	
+	var headerPairsStr string
+	
+	// 🚩 First check if flag was explicitly set
+	if flagPtr := flag.Lookup(flagName); flagPtr != nil {
+		if *flagValue != defaultValue {
+			headerPairsStr = *flagValue
+		}
+	}
+	
+	// 🌍 Then check environment variable if flag wasn't set
+	if headerPairsStr == "" {
+		if envValue := os.Getenv("PROXY_PERSISTENT_HEADERS"); envValue != "" {
+			headerPairsStr = envValue
+		} else {
+			headerPairsStr = defaultValue
+		}
+	}
+	
+	// Parse header pairs in format "key1:value1,key2:value2"
+	if headerPairsStr != "" {
+		pairs := strings.Split(headerPairsStr, ",")
+		for _, pair := range pairs {
+			parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
+			if len(parts) == 2 {
+				key := strings.TrimSpace(parts[0])
+				value := strings.TrimSpace(parts[1])
+				if key != "" && value != "" {
+					persistentHeaders[key] = value
+				}
+			}
+		}
+	}
+	
+	return persistentHeaders
+}
+
 func main() {
 	var (
 		listenPort        = flag.Int("port", 6789, "Port to listen on")
@@ -570,12 +610,16 @@ func main() {
 		sharedHealthPort  = flag.Bool("shared-health-port", false, "Serve health checks on the same port as HTTP proxy")
 		sharedMetricsPort = flag.Bool("shared-metrics-port", false, "Serve metrics on the same port as HTTP proxy")
 		headerQueues      = flag.String("header-queues", "X-Amz-Security-Token", "Comma-separated list of headers to create separate queues for (e.g., 'X-Amz-Security-Token,Authorization')")
+		persistentHeaders = flag.String("persistent-headers", "", "Comma-separated list of headers to always add (format: 'key1:value1,key2:value2')")
 		timeout           = flag.Int("timeout", 0, "Request timeout in seconds (0 = infinite ⏳)")
 	)
 	flag.Parse()
 
 	// Parse header queues with flag → env → default priority
 	headerQueuesList := getHeaderQueuesFromEnvOrFlag(headerQueues, "header-queues", "X-Amz-Security-Token")
+	
+	// Parse persistent headers with flag → env → default priority
+	persistentHeadersMap := getPersistentHeadersFromEnvOrFlag(persistentHeaders, "persistent-headers", "")
 
 	config := &Config{
 		ListenPort:        getIntFromEnvOrFlag("PROXY_LISTEN_PORT", listenPort, "port", 6789),
@@ -591,6 +635,7 @@ func main() {
 		SharedHealthPort:  getBoolFromEnvOrFlag("PROXY_SHARED_HEALTH_PORT", sharedHealthPort, "shared-health-port", false),
 		SharedMetricsPort: getBoolFromEnvOrFlag("PROXY_SHARED_METRICS_PORT", sharedMetricsPort, "shared-metrics-port", false),
 		HeaderQueues:      headerQueuesList,
+		PersistentHeaders: persistentHeadersMap,
 		Timeout:           time.Duration(getIntFromEnvOrFlag("PROXY_TIMEOUT", timeout, "timeout", 0)) * time.Second,
 	}
 
@@ -615,6 +660,7 @@ func main() {
 			"shared_health_port":  config.SharedHealthPort,
 			"shared_metrics_port": config.SharedMetricsPort,
 			"header_queues":       config.HeaderQueues,
+			"persistent_headers":  config.PersistentHeaders,
 			"timeout":             config.Timeout,
 		},
 		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
@@ -657,16 +703,17 @@ func main() {
 	go startSocketProxy(queueManager, config, ctx)
 
 	queueManager.logger.WithFields(logrus.Fields{
-		"listen_port":   config.ListenPort,
-		"socket_port":   socketPort,
-		"target_host":   config.TargetHost,
-		"target_port":   config.TargetPort,
-		"delay_min":     config.DelayMin,
-		"delay_max":     config.DelayMax,
-		"log_level":     config.LogLevel,
-		"header_queues": config.HeaderQueues,
-		"timeout":       config.Timeout,
-		"timestamp":     time.Now().UTC().Format(time.RFC3339Nano),
+		"listen_port":        config.ListenPort,
+		"socket_port":        socketPort,
+		"target_host":        config.TargetHost,
+		"target_port":        config.TargetPort,
+		"delay_min":          config.DelayMin,
+		"delay_max":          config.DelayMax,
+		"log_level":          config.LogLevel,
+		"header_queues":      config.HeaderQueues,
+		"persistent_headers": config.PersistentHeaders,
+		"timeout":            config.Timeout,
+		"timestamp":          time.Now().UTC().Format(time.RFC3339Nano),
 	}).Info("🎯 Proxy server started and ready to accept connections")
 
 	select {}
@@ -819,6 +866,16 @@ func (pq *ProxyQueue) processHTTPRequest(req ProxyRequest) {
 	targetReq.URL.Host = target.Host
 	targetReq.Host = target.Host
 	targetReq.RequestURI = ""
+
+	// Apply persistent headers (these cannot be overwritten by clients)
+	for headerName, headerValue := range pq.config.PersistentHeaders {
+		targetReq.Header.Set(headerName, headerValue)
+		pq.logger.WithFields(logrus.Fields{
+			"request_id":   req.ID,
+			"header_name":  headerName,
+			"header_value": headerValue,
+		}).Debug("🔒 Applied persistent header")
+	}
 
 	// Create HTTP client with configurable timeout
 	timeout := 30 * time.Second // default timeout
