@@ -23,6 +23,10 @@ services:
       - PROXY_HEADER_QUEUES=X-Amz-Security-Token,Authorization
       - PROXY_PERSISTENT_HEADERS=x-token-test:token-1234
       - PROXY_LOG_LEVEL=info
+      # Optional proxy configuration (uncomment and configure as needed)
+      # - PROXY_URL=http://corporate-proxy:8080
+      # - PROXY_URL=socks5://proxy.company.com:1080
+      # - PROXY_AUTH=username:password
     restart: always
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6789/health"]
