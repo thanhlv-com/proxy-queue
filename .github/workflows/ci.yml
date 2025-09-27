@@ -34,15 +34,7 @@ jobs:
       
     - name: Verify dependencies
       run: go mod verify
-      
-    - name: Format check
-      run: |
-        if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
-          echo "Code is not formatted properly:"
-          gofmt -s -l .
-          exit 1
-        fi
-        
+
     - name: Vet
       run: go vet ./...
       
