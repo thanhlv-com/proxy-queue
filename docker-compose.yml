@@ -1,8 +1,8 @@
 version: '3.8'
 
 services:
-  proxy-queue_test:
-    build: .
+  proxy-queue:
+    image: thanhlvcom/proxy-queue:v1.2.0
     ports:
       - "6789:6789"   # HTTP/HTTPS proxy
       - "6799:6799"   # Socket proxy
