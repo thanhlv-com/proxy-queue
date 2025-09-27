@@ -7,6 +7,7 @@ toolchain go1.24.7
 require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/sirupsen/logrus v1.9.3
+	golang.org/x/net v0.43.0
 )
 
 require (
