@@ -135,6 +135,8 @@ variables take precedence when both are provided.
 | `PROXY_HEADER_QUEUES`       | `-header-queues`       | X-Amz-Security-Token | Comma-separated headers for dedicated queues |
 | `PROXY_PERSISTENT_HEADERS`  | `-persistent-headers`  | (empty)              | Persistent headers that cannot be overwritten 🔒 |
 | `PROXY_TIMEOUT`             | `-timeout`             | 0                    | Request timeout in seconds (0 = infinite ⏳)  |
+| `PROXY_URL`                 | `-proxy-url`           | (empty)              | Proxy URL for TARGET_HOST connections 🌐          |
+| `PROXY_AUTH`                | `-proxy-auth`          | (empty)              | Proxy authentication (username:password) 🔐      |
 
 ### Persistent Headers 🔒
 
@@ -182,6 +184,64 @@ export PROXY_PERSISTENT_HEADERS="User-Agent:mobile,X-API-Version:v2.1,Authorizat
 export PROXY_PERSISTENT_HEADERS="User-Agent:mobile,X-Custom:always-present"
 ./proxy-queue -target-host=api.example.com
 ```
+
+### Proxy Configuration 🌐
+
+The proxy-queue can route all TARGET_HOST connections through an upstream proxy server. This is useful when your network requires proxy access to reach external services, or when you need to add an additional layer of routing.
+
+#### Supported Proxy Types
+
+| Proxy Type    | URL Format                         | Features                                           |
+|---------------|------------------------------------|----------------------------------------------------|
+| **HTTP**      | `http://proxy.example.com:8080`    | ✅ HTTP requests<br>❌ Socket connections         |
+| **HTTPS**     | `https://proxy.example.com:8080`   | ✅ HTTP requests<br>❌ Socket connections         |
+| **SOCKS5**    | `socks5://proxy.example.com:1080`  | ✅ HTTP requests<br>✅ Socket connections         |
+
+#### Configuration Methods
+
+```bash
+# Command line flags
+./proxy-queue \
+  -target-host=api.example.com \
+  -proxy-url=socks5://proxy.company.com:1080 \
+  -proxy-auth=username:password
+
+# Environment variables
+export PROXY_URL=http://corporate-proxy:8080
+export PROXY_AUTH=myuser:mypass
+./proxy-queue -target-host=api.example.com
+
+# Docker environment
+docker run -e PROXY_URL=socks5://proxy:1080 -e PROXY_AUTH=user:pass proxy-queue
+```
+
+#### Authentication Support
+
+The proxy supports username/password authentication for all proxy types:
+
+```bash
+# Include auth in URL (HTTP/HTTPS only)
+export PROXY_URL=http://username:password@proxy.example.com:8080
+
+# Separate auth parameter (recommended for security)
+export PROXY_URL=socks5://proxy.example.com:1080
+export PROXY_AUTH=username:password
+```
+
+#### Security Features
+
+- **No credential logging**: Proxy authentication is never logged in plaintext
+- **Fallback behavior**: If proxy connection fails, falls back to direct connection
+- **Connection validation**: Invalid proxy URLs are detected and logged
+- **Debug visibility**: Proxy usage is logged at debug level for troubleshooting
+
+#### Proxy vs Direct Connection
+
+| Connection Type | Proxy Required | Fallback Behavior                    |
+|-----------------|----------------|--------------------------------------|
+| **HTTP/HTTPS**  | Optional       | Falls back to direct connection      |
+| **Socket**      | Optional       | Falls back to direct connection      |
+| **Both**        | Optional       | Each connection type handles its own |
 
 ### Header-Based Queue Routing 📤
 

@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/net/proxy"
 )
 
 type Config struct {
@@ -39,6 +40,8 @@ type Config struct {
 	HeaderQueues      []string      // Headers to create separate queues for (e.g., ["X-Amz-Security-Token", "X-Amz-Content-Sha256"])
 	PersistentHeaders map[string]string // Headers that are always added and cannot be overwritten by clients (e.g., {"User-Agent": "mobile"})
 	Timeout           time.Duration // Request timeout (0 = infinite)
+	ProxyURL          string        // Proxy URL (e.g., "http://proxy:8080", "socks5://proxy:1080")
+	ProxyAuth         string        // Proxy authentication in format "username:password"
 }
 
 type ProxyRequest struct {
@@ -612,6 +615,8 @@ func main() {
 		headerQueues      = flag.String("header-queues", "X-Amz-Security-Token", "Comma-separated list of headers to create separate queues for (e.g., 'X-Amz-Security-Token,Authorization')")
 		persistentHeaders = flag.String("persistent-headers", "", "Comma-separated list of headers to always add (format: 'key1:value1,key2:value2')")
 		timeout           = flag.Int("timeout", 0, "Request timeout in seconds (0 = infinite ⏳)")
+		proxyURL          = flag.String("proxy-url", "", "Proxy URL for TARGET_HOST connections (e.g., 'http://proxy:8080', 'socks5://proxy:1080')")
+		proxyAuth         = flag.String("proxy-auth", "", "Proxy authentication in format 'username:password'")
 	)
 	flag.Parse()
 
@@ -637,6 +642,8 @@ func main() {
 		HeaderQueues:      headerQueuesList,
 		PersistentHeaders: persistentHeadersMap,
 		Timeout:           time.Duration(getIntFromEnvOrFlag("PROXY_TIMEOUT", timeout, "timeout", 0)) * time.Second,
+		ProxyURL:          getStringFromEnvOrFlag("PROXY_URL", proxyURL, "proxy-url", ""),
+		ProxyAuth:         getStringFromEnvOrFlag("PROXY_AUTH", proxyAuth, "proxy-auth", ""),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -662,6 +669,8 @@ func main() {
 			"header_queues":       config.HeaderQueues,
 			"persistent_headers":  config.PersistentHeaders,
 			"timeout":             config.Timeout,
+			"proxy_url":           config.ProxyURL,
+			"proxy_auth_set":      config.ProxyAuth != "",
 		},
 		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
 	}).Debug("🚀 Proxy Queue Manager Configuration Loaded")
@@ -713,6 +722,8 @@ func main() {
 		"header_queues":      config.HeaderQueues,
 		"persistent_headers": config.PersistentHeaders,
 		"timeout":            config.Timeout,
+		"proxy_url":          config.ProxyURL,
+		"proxy_auth_set":     config.ProxyAuth != "",
 		"timestamp":          time.Now().UTC().Format(time.RFC3339Nano),
 	}).Info("🎯 Proxy server started and ready to accept connections")
 
@@ -796,6 +807,115 @@ func startHealthServer(queueManager *QueueManager, config *Config) {
 	if err := server.ListenAndServe(); err != nil {
 		logrus.WithError(err).Error("Health server error")
 	}
+}
+
+func (pq *ProxyQueue) createDialerWithProxy() func(network, address string) (net.Conn, error) {
+	if pq.config.ProxyURL == "" {
+		return net.Dial
+	}
+
+	proxyURL, err := url.Parse(pq.config.ProxyURL)
+	if err != nil {
+		pq.logger.WithFields(logrus.Fields{
+			"proxy_url": pq.config.ProxyURL,
+			"error":     err,
+		}).Error("Failed to parse proxy URL for socket connection, using direct connection")
+		return net.Dial
+	}
+
+	switch proxyURL.Scheme {
+	case "http", "https":
+		pq.logger.Warn("HTTP proxy not supported for socket connections, using direct connection")
+		return net.Dial
+
+	case "socks5":
+		var auth *proxy.Auth
+		if pq.config.ProxyAuth != "" {
+			parts := strings.SplitN(pq.config.ProxyAuth, ":", 2)
+			if len(parts) == 2 {
+				auth = &proxy.Auth{
+					User:     parts[0],
+					Password: parts[1],
+				}
+			}
+		}
+
+		dialer, err := proxy.SOCKS5("tcp", proxyURL.Host, auth, proxy.Direct)
+		if err != nil {
+			pq.logger.WithFields(logrus.Fields{
+				"proxy_url": pq.config.ProxyURL,
+				"error":     err,
+			}).Error("Failed to create SOCKS5 proxy dialer for socket connection, using direct connection")
+			return net.Dial
+		}
+
+		pq.logger.WithField("proxy_url", pq.config.ProxyURL).Debug("🧦 Using SOCKS5 proxy for socket connection")
+		return dialer.Dial
+
+	default:
+		pq.logger.WithField("proxy_scheme", proxyURL.Scheme).Warn("Unsupported proxy scheme for socket connection, using direct connection")
+		return net.Dial
+	}
+}
+
+func (pq *ProxyQueue) createTransportWithProxy() *http.Transport {
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
+
+	if pq.config.ProxyURL != "" {
+		proxyURL, err := url.Parse(pq.config.ProxyURL)
+		if err != nil {
+			pq.logger.WithFields(logrus.Fields{
+				"proxy_url": pq.config.ProxyURL,
+				"error":     err,
+			}).Error("Failed to parse proxy URL, using direct connection")
+			return transport
+		}
+
+		switch proxyURL.Scheme {
+		case "http", "https":
+			if pq.config.ProxyAuth != "" {
+				parts := strings.SplitN(pq.config.ProxyAuth, ":", 2)
+				if len(parts) == 2 {
+					proxyURL.User = url.UserPassword(parts[0], parts[1])
+				}
+			}
+			transport.Proxy = http.ProxyURL(proxyURL)
+			pq.logger.WithField("proxy_url", pq.config.ProxyURL).Debug("🌐 Using HTTP(S) proxy")
+
+		case "socks5":
+			var auth *proxy.Auth
+			if pq.config.ProxyAuth != "" {
+				parts := strings.SplitN(pq.config.ProxyAuth, ":", 2)
+				if len(parts) == 2 {
+					auth = &proxy.Auth{
+						User:     parts[0],
+						Password: parts[1],
+					}
+				}
+			}
+
+			dialer, err := proxy.SOCKS5("tcp", proxyURL.Host, auth, proxy.Direct)
+			if err != nil {
+				pq.logger.WithFields(logrus.Fields{
+					"proxy_url": pq.config.ProxyURL,
+					"error":     err,
+				}).Error("Failed to create SOCKS5 proxy dialer, using direct connection")
+				return transport
+			}
+
+			transport.Dial = dialer.Dial
+			pq.logger.WithField("proxy_url", pq.config.ProxyURL).Debug("🧦 Using SOCKS5 proxy")
+
+		default:
+			pq.logger.WithField("proxy_scheme", proxyURL.Scheme).Warn("Unsupported proxy scheme, using direct connection")
+		}
+	}
+
+	return transport
 }
 
 func (pq *ProxyQueue) getHealthStatus() map[string]interface{} {
@@ -886,12 +1006,8 @@ func (pq *ProxyQueue) processHTTPRequest(req ProxyRequest) {
 	}
 
 	client := &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true,
-			},
-		},
+		Timeout:   timeout,
+		Transport: pq.createTransportWithProxy(),
 	}
 
 	// Forward the request
@@ -1176,7 +1292,39 @@ func (pq *ProxyQueue) processSocketRequest(req ProxyRequest) {
 
 	connectionStartTime := time.Now()
 
-	targetConn, err := net.DialTimeout("tcp", targetAddr, socketTimeout)
+	// Use proxy-aware dialer
+	dialer := pq.createDialerWithProxy()
+	
+	// Create a context with timeout for the connection
+	ctx, cancel := context.WithTimeout(context.Background(), socketTimeout)
+	defer cancel()
+	
+	// Channel to handle the connection result
+	connChan := make(chan net.Conn, 1)
+	errChan := make(chan error, 1)
+	
+	go func() {
+		conn, err := dialer("tcp", targetAddr)
+		if err != nil {
+			errChan <- err
+		} else {
+			connChan <- conn
+		}
+	}()
+	
+	var targetConn net.Conn
+	var err error
+	
+	select {
+	case targetConn = <-connChan:
+		// Connection successful
+	case err = <-errChan:
+		// Connection failed
+	case <-ctx.Done():
+		// Timeout
+		err = fmt.Errorf("connection timeout after %v", socketTimeout)
+	}
+	
 	connectionTime := time.Since(connectionStartTime)
 	if err != nil {
 		pq.logger.WithFields(logrus.Fields{
