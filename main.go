@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -184,6 +185,26 @@ func setupLogger(logLevel string) *logrus.Logger {
 	return logger
 }
 
+// isSensitiveHeader checks if a header should be hashed for security
+func isSensitiveHeader(headerName string) bool {
+	sensitiveHeaders := map[string]bool{
+		"authorization":        true,
+		"x-amz-security-token": true,
+		"x-api-key":           true,
+		"cookie":              true,
+		"set-cookie":          true,
+		"x-auth-token":        true,
+		"bearer":              true,
+	}
+	return sensitiveHeaders[strings.ToLower(headerName)]
+}
+
+// hashHeaderValue returns a truncated hash of the header value for logging
+func hashHeaderValue(value string) string {
+	hash := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("***HASHED*** %x", hash)[:32] // Show hash prefix for security
+}
+
 func (pq *ProxyQueue) logHTTPRequest(requestID string, data HTTPRequestData) {
 	if pq.logger.Level < logrus.DebugLevel {
 		return
@@ -202,10 +223,15 @@ func (pq *ProxyQueue) logHTTPRequest(requestID string, data HTTPRequestData) {
 		}
 	}
 
-	// Prepare headers for logging
+	// Prepare headers for logging (hash sensitive headers for security)
 	headers := make(map[string]string)
 	for key, values := range r.Header {
-		headers[key] = strings.Join(values, ", ")
+		headerValue := strings.Join(values, ", ")
+		if isSensitiveHeader(key) {
+			headers[key] = hashHeaderValue(headerValue)
+		} else {
+			headers[key] = headerValue
+		}
 	}
 
 	// Log comprehensive request details
@@ -243,10 +269,15 @@ func (pq *ProxyQueue) logHTTPResponse(requestID string, resp *http.Response, rem
 		}
 	}
 
-	// Prepare headers for logging
+	// Prepare headers for logging (hash sensitive headers for security)
 	headers := make(map[string]string)
 	for key, values := range resp.Header {
-		headers[key] = strings.Join(values, ", ")
+		headerValue := strings.Join(values, ", ")
+		if isSensitiveHeader(key) {
+			headers[key] = hashHeaderValue(headerValue)
+		} else {
+			headers[key] = headerValue
+		}
 	}
 
 	// Log comprehensive response details
@@ -329,7 +360,9 @@ func (qm *QueueManager) Stop() {
 }
 
 func (qm *QueueManager) getQueueKey(headerName, headerValue string) string {
-	return fmt.Sprintf("%s:%s", headerName, headerValue)
+	// Hash the header value to avoid storing sensitive data in memory
+	hash := sha256.Sum256([]byte(headerValue))
+	return fmt.Sprintf("%s:%x", headerName, hash)
 }
 
 func (qm *QueueManager) getOrCreateHeaderQueue(ctx context.Context, headerName, headerValue string) *ProxyQueue {
@@ -355,10 +388,14 @@ func (qm *QueueManager) getOrCreateHeaderQueue(ctx context.Context, headerName, 
 	qm.headerQueues[queueKey] = queue
 	queue.Start(ctx)
 
+	// Generate truncated hash for logging (for readability)
+	hash := sha256.Sum256([]byte(headerValue))
+	hashHex := fmt.Sprintf("%x", hash)[:16] // Show first 16 chars of hash
+
 	qm.logger.WithFields(logrus.Fields{
-		"header_name":  headerName,
-		"header_value": headerValue,
-		"queue_key":    queueKey,
+		"header_name": headerName,
+		"header_hash": hashHex,
+		"queue_key":   queueKey,
 	}).Debug("🎟️ Created new header-based queue")
 
 	return queue
@@ -369,11 +406,15 @@ func (qm *QueueManager) AddRequest(ctx context.Context, req ProxyRequest, header
 	for _, headerName := range qm.config.HeaderQueues {
 		if headerValue, exists := headers[headerName]; exists && headerValue != "" {
 			queue := qm.getOrCreateHeaderQueue(ctx, headerName, headerValue)
+			// Generate truncated hash for logging (for readability)
+			hash := sha256.Sum256([]byte(headerValue))
+			hashHex := fmt.Sprintf("%x", hash)[:16] // Show first 16 chars of hash
+
 			qm.logger.WithFields(logrus.Fields{
-				"request_id":   req.ID,
-				"header_name":  headerName,
-				"header_value": headerValue,
-				"queue_type":   "header_queue",
+				"request_id":  req.ID,
+				"header_name": headerName,
+				"header_hash": hashHex,
+				"queue_type":  "header_queue",
 			}).Debug("🚶‍♂️ Routing request to header-based queue")
 			return queue.AddRequest(req)
 		}
@@ -990,10 +1031,14 @@ func (pq *ProxyQueue) processHTTPRequest(req ProxyRequest) {
 	// Apply persistent headers (these cannot be overwritten by clients)
 	for headerName, headerValue := range pq.config.PersistentHeaders {
 		targetReq.Header.Set(headerName, headerValue)
+		// Generate truncated hash for logging (for readability)
+		hash := sha256.Sum256([]byte(headerValue))
+		hashHex := fmt.Sprintf("%x", hash)[:16] // Show first 16 chars of hash
+
 		pq.logger.WithFields(logrus.Fields{
-			"request_id":   req.ID,
-			"header_name":  headerName,
-			"header_value": headerValue,
+			"request_id":  req.ID,
+			"header_name": headerName,
+			"header_hash": hashHex,
 		}).Debug("🔒 Applied persistent header")
 	}
 
@@ -1166,10 +1211,12 @@ func startHTTPProxy(queueManager *QueueManager, config *Config, ctx context.Cont
 			"timestamp":  startTime.UTC().Format(time.RFC3339Nano),
 		}
 
-		// Add configured headers to log if they exist
+		// Add configured headers to log if they exist (using hash for security)
 		for _, headerName := range config.HeaderQueues {
 			if headerValue, exists := headers[headerName]; exists {
-				logFields[fmt.Sprintf("header_%s", strings.ToLower(headerName))] = headerValue
+				hash := sha256.Sum256([]byte(headerValue))
+				hashHex := fmt.Sprintf("%x", hash)[:16] // Show first 16 chars of hash
+				logFields[fmt.Sprintf("header_%s_hash", strings.ToLower(headerName))] = hashHex
 			}
 		}
 
